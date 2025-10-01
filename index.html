@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF Compressor</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -127,6 +128,62 @@
         .file-size {
             color: #666;
             font-size: 14px;
+            margin-bottom: 15px;
+        }
+
+        .quality-selector {
+            margin-top: 15px;
+        }
+
+        .quality-label {
+            color: #333;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        .quality-options {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .quality-option {
+            flex: 1;
+            min-width: 100px;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+        }
+
+        .quality-option:hover {
+            border-color: #667eea;
+        }
+
+        .quality-option.selected {
+            border-color: #667eea;
+            background: #f0f2ff;
+        }
+
+        .quality-option input {
+            display: none;
+        }
+
+        .quality-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 13px;
+        }
+
+        .quality-desc {
+            font-size: 11px;
+            color: #999;
+            margin-top: 3px;
         }
 
         .compress-btn {
@@ -292,9 +349,20 @@
                 font-size: 36px;
             }
 
+            .quality-options {
+                flex-direction: column;
+            }
+
+            .quality-option {
+                min-width: 100%;
+            }
+
             .download-btn, .reset-btn {
                 padding: 10px 20px;
                 font-size: 14px;
+                display: block;
+                width: 100%;
+                margin: 5px 0;
             }
         }
     </style>
@@ -302,7 +370,7 @@
 <body>
     <div class="container">
         <h1>📄 PDF Compressor</h1>
-        <p class="subtitle">Compress your PDFs quickly and securely</p>
+        <p class="subtitle">Compress PDFs by reducing image quality</p>
 
         <div class="upload-area" id="uploadArea">
             <div class="upload-icon">📁</div>
@@ -315,6 +383,27 @@
         <div class="file-info" id="fileInfo">
             <div class="file-name" id="fileName"></div>
             <div class="file-size" id="fileSize"></div>
+            
+            <div class="quality-selector">
+                <label class="quality-label">Compression Quality:</label>
+                <div class="quality-options">
+                    <label class="quality-option">
+                        <input type="radio" name="quality" value="0.3">
+                        <div class="quality-name">High</div>
+                        <div class="quality-desc">Max compression</div>
+                    </label>
+                    <label class="quality-option selected">
+                        <input type="radio" name="quality" value="0.5" checked>
+                        <div class="quality-name">Medium</div>
+                        <div class="quality-desc">Balanced</div>
+                    </label>
+                    <label class="quality-option">
+                        <input type="radio" name="quality" value="0.7">
+                        <div class="quality-name">Low</div>
+                        <div class="quality-desc">Better quality</div>
+                    </label>
+                </div>
+            </div>
         </div>
 
         <button class="compress-btn" id="compressBtn">Compress PDF</button>
@@ -338,6 +427,8 @@
     </div>
 
     <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         const fileInfo = document.getElementById('fileInfo');
@@ -352,9 +443,10 @@
         const downloadBtn = document.getElementById('downloadBtn');
         const resetBtn = document.getElementById('resetBtn');
         const errorDiv = document.getElementById('error');
+        const qualityOptions = document.querySelectorAll('.quality-option');
 
         let selectedFile = null;
-        let compressedPdfBytes = null;
+        let compressedPdfBlob = null;
 
         uploadArea.addEventListener('click', () => fileInput.click());
 
@@ -382,6 +474,14 @@
             }
         });
 
+        qualityOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                qualityOptions.forEach(opt => opt.classList.remove('selected'));
+                option.classList.add('selected');
+                option.querySelector('input').checked = true;
+            });
+        });
+
         function handleFileSelect(file) {
             if (file.type !== 'application/pdf') {
                 showError('Please select a valid PDF file');
@@ -407,6 +507,8 @@
         async function compressPDF() {
             if (!selectedFile) return;
 
+            const quality = parseFloat(document.querySelector('input[name="quality"]:checked').value);
+
             compressBtn.disabled = true;
             progress.classList.add('show');
             errorDiv.classList.remove('show');
@@ -414,28 +516,61 @@
 
             try {
                 const arrayBuffer = await selectedFile.arrayBuffer();
-                updateProgress(30, 'Loading PDF...');
+                updateProgress(20, 'Loading PDF...');
 
-                const pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
-                updateProgress(50, 'Compressing...');
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const numPages = pdf.numPages;
+                
+                updateProgress(30, `Processing ${numPages} pages...`);
 
-                const pdfBytes = await pdfDoc.save({
-                    useObjectStreams: false,
-                    addDefaultPage: false,
-                    objectsPerTick: 50,
-                });
+                const { jsPDF } = window.jspdf;
+                const newPdf = new jsPDF();
+                let isFirstPage = true;
 
+                for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const viewport = page.getViewport({ scale: 1.5 });
+                    
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+
+                    await page.render({
+                        canvasContext: context,
+                        viewport: viewport
+                    }).promise;
+
+                    const imgData = canvas.toDataURL('image/jpeg', quality);
+                    
+                    const pdfWidth = 210;
+                    const pdfHeight = (viewport.height * pdfWidth) / viewport.width;
+
+                    if (!isFirstPage) {
+                        newPdf.addPage([pdfWidth, pdfHeight], pdfHeight > pdfWidth ? 'portrait' : 'landscape');
+                    } else {
+                        newPdf.deletePage(1);
+                        newPdf.addPage([pdfWidth, pdfHeight], pdfHeight > pdfWidth ? 'portrait' : 'landscape');
+                        isFirstPage = false;
+                    }
+
+                    newPdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
+                    
+                    updateProgress(30 + (pageNum / numPages) * 60, `Processing page ${pageNum}/${numPages}...`);
+                }
+
+                updateProgress(95, 'Finalizing...');
+                compressedPdfBlob = newPdf.output('blob');
                 updateProgress(100, 'Complete!');
-                compressedPdfBytes = pdfBytes;
 
                 const originalSize = selectedFile.size;
-                const compressedSize = pdfBytes.length;
+                const compressedSize = compressedPdfBlob.size;
                 const reduction = ((originalSize - compressedSize) / originalSize * 100).toFixed(1);
 
                 compressionStats.innerHTML = `
                     Original: ${formatBytes(originalSize)}<br>
                     Compressed: ${formatBytes(compressedSize)}<br>
-                    Reduction: ${reduction}%
+                    <strong>Reduction: ${reduction}%</strong>
                 `;
 
                 setTimeout(() => {
@@ -446,17 +581,16 @@
 
             } catch (error) {
                 console.error('Compression error:', error);
-                showError('Failed to compress PDF. Please try another file.');
+                showError('Failed to compress PDF. The file may be protected or corrupted.');
                 progress.classList.remove('show');
                 compressBtn.disabled = false;
             }
         }
 
         downloadBtn.addEventListener('click', () => {
-            if (!compressedPdfBytes) return;
+            if (!compressedPdfBlob) return;
 
-            const blob = new Blob([compressedPdfBytes], { type: 'application/pdf' });
-            const url = URL.createObjectURL(blob);
+            const url = URL.createObjectURL(compressedPdfBlob);
             const a = document.createElement('a');
             a.href = url;
             a.download = selectedFile.name.replace('.pdf', '_compressed.pdf');
@@ -468,7 +602,7 @@
 
         resetBtn.addEventListener('click', () => {
             selectedFile = null;
-            compressedPdfBytes = null;
+            compressedPdfBlob = null;
             fileInput.value = '';
             fileInfo.classList.remove('show');
             compressBtn.classList.remove('show');
